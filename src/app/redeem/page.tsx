@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Turnstile } from "next-turnstile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -21,6 +22,7 @@ interface RedeemError {
 export default function RedeemPage() {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<RedeemSuccess | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +39,7 @@ export default function RedeemPage() {
       const res = await fetch("/api/redeem", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, code }),
+        body: JSON.stringify({ email, code, turnstileToken }),
       });
 
       const data: RedeemSuccess | RedeemError = await res.json();
@@ -45,9 +47,10 @@ export default function RedeemPage() {
       if (!res.ok) {
         const errorData = data as RedeemError;
         setError(errorData.message || "兑换失败");
-        // Check if challenge required
+        // Check if challenge required - need to refresh Turnstile
         if (errorData.error === "CHALLENGE_REQUIRED") {
           setChallengeRequired(true);
+          setTurnstileToken(null);
         }
       } else {
         setResult(data as RedeemSuccess);
@@ -90,7 +93,34 @@ export default function RedeemPage() {
               required
             />
           </div>
-          <Button type="submit" disabled={loading || !email || !code} className="w-full">
+
+          {/* Turnstile Widget */}
+          <div className="flex justify-center">
+            <Turnstile
+              siteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || ""}
+              onVerify={(token: string) => {
+                setTurnstileToken(token);
+                setChallengeRequired(false);
+              }}
+              onError={() => {
+                setTurnstileToken(null);
+                setError("人机验证失败，请重试");
+              }}
+              onExpire={() => {
+                setTurnstileToken(null);
+              }}
+              options={{
+                theme: "light",
+                size: "normal",
+              }}
+            />
+          </div>
+
+          <Button
+            type="submit"
+            disabled={loading || !email || !code}
+            className="w-full"
+          >
             {loading ? "兑换中..." : "兑换"}
           </Button>
         </form>
@@ -121,7 +151,7 @@ export default function RedeemPage() {
             <p className="text-red-700 dark:text-red-300 text-sm">{error}</p>
             {challengeRequired && (
               <p className="text-xs text-red-600 dark:text-red-400">
-                请刷新页面后重试，或稍后再试
+                请完成上方人机验证后重试
               </p>
             )}
           </div>

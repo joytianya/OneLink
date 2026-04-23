@@ -5,7 +5,7 @@
 
 import { db } from '../db';
 import { activationCodes, users, subscriptions, plans, redemptionLogs } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 
 // 兑换请求
@@ -179,15 +179,24 @@ export async function executeRedeem(request: RedeemRequest): Promise<RedeemResul
         subscriptionInfo = updatedSub;
       }
 
-      // 2.7 标记激活码已使用
-      await tx
+      // 2.7 标记激活码已使用（乐观锁：仅当 status 为 unused 时才更新）
+      const updatedCodes = await tx
         .update(activationCodes)
         .set({
           status: 'used',
           usedByUserId: userInfo.id,
           usedAt: new Date(),
         })
-        .where(eq(activationCodes.id, ac.id));
+        .where(and(
+          eq(activationCodes.id, ac.id),
+          eq(activationCodes.status, 'unused')
+        ))
+        .returning();
+
+      // 乐观锁检查：如果更新失败，说明激活码已被其他事务使用
+      if (updatedCodes.length === 0) {
+        throw new Error('CODE_ALREADY_USED');
+      }
 
       // 2.8 记录兑换日志
       await tx.insert(redemptionLogs).values({

@@ -89,20 +89,23 @@ async function getFailCount(
 
 /**
  * 检查是否处于硬限流状态
+ * @param bucketType - 维度类型 'ip' 或 'email'
  * @param bucketHash - 维度哈希值
  * @param blockMinutes - 限流时长（分钟）
  * @returns 是否处于限流中
  */
-async function isBlocked(bucketHash: string, blockMinutes: number): Promise<boolean> {
+async function isBlocked(bucketType: 'ip' | 'email', bucketHash: string, blockMinutes: number): Promise<boolean> {
   // 检查最近是否有 blocked 状态记录
   const blockStart = new Date(Date.now() - blockMinutes * 60 * 1000);
+
+  const hashColumn = bucketType === 'ip' ? redeemRiskAttempts.ipHash : redeemRiskAttempts.emailHash;
 
   const result = await db
     .select()
     .from(redeemRiskAttempts)
     .where(
       and(
-        eq(redeemRiskAttempts.ipHash, bucketHash),
+        eq(hashColumn, bucketHash),
         eq(redeemRiskAttempts.outcome, 'blocked'),
         gte(redeemRiskAttempts.createdAt, blockStart)
       )
@@ -127,7 +130,7 @@ export async function evaluateRisk(ip: string, email: string): Promise<RiskEvalu
   const ipHardCount = await getFailCount('ip', ipHash, RATE_LIMIT_POLICY.ip.hardWindowMinutes);
   if (ipHardCount >= RATE_LIMIT_POLICY.ip.hardThreshold) {
     // 检查是否已记录限流
-    const blocked = await isBlocked(ipHash, RATE_LIMIT_POLICY.ip.blockMinutes);
+    const blocked = await isBlocked('ip', ipHash, RATE_LIMIT_POLICY.ip.blockMinutes);
     if (blocked) {
       return { decision: 'BLOCKED', reason: 'IP rate limited' };
     }
@@ -136,7 +139,7 @@ export async function evaluateRisk(ip: string, email: string): Promise<RiskEvalu
   // 2. 检查邮箱硬限流
   const emailHardCount = await getFailCount('email', emailHash, RATE_LIMIT_POLICY.email.hardWindowMinutes);
   if (emailHardCount >= RATE_LIMIT_POLICY.email.hardThreshold) {
-    const blocked = await isBlocked(emailHash, RATE_LIMIT_POLICY.email.blockMinutes);
+    const blocked = await isBlocked('email', emailHash, RATE_LIMIT_POLICY.email.blockMinutes);
     if (blocked) {
       return { decision: 'BLOCKED', reason: 'Email rate limited' };
     }
