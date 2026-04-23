@@ -1,36 +1,63 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { useState } from "react";
+import { Turnstile } from "next-turnstile";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
+interface RedeemSuccess {
+  success: true;
+  data: {
+    planName: string;
+    subToken: string;
+    expireAt: string;
+    isNewUser: boolean;
+  };
+}
+
+interface RedeemError {
+  error: string;
+  message: string;
+}
 
 export default function RedeemPage() {
-  const [code, setCode] = useState('');
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{
-    success: boolean;
-    sub_token?: string;
-    expire_at?: string;
-    plan_name?: string;
-    error?: string;
-  } | null>(null);
+  const [result, setResult] = useState<RedeemSuccess | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [challengeRequired, setChallengeRequired] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError(null);
     setResult(null);
+    setChallengeRequired(false);
 
     try {
-      const response = await fetch('/api/redeem', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
+      const res = await fetch("/api/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code, turnstileToken }),
       });
 
-      const data = await response.json();
-      setResult(data);
+      const data: RedeemSuccess | RedeemError = await res.json();
+
+      if (!res.ok) {
+        const errorData = data as RedeemError;
+        setError(errorData.message || "兑换失败");
+        // Check if challenge required - need to refresh Turnstile
+        if (errorData.error === "CHALLENGE_REQUIRED") {
+          setChallengeRequired(true);
+          setTurnstileToken(null);
+        }
+      } else {
+        setResult(data as RedeemSuccess);
+      }
     } catch {
-      setResult({ success: false, error: '网络错误，请稍后重试' });
+      setError("网络错误，请稍后重试");
     } finally {
       setLoading(false);
     }
@@ -39,66 +66,111 @@ export default function RedeemPage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-8">
       <div className="w-full max-w-md space-y-6">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold">激活码兑换</h1>
-          <p className="text-gray-600 mt-2">输入您的激活码获取订阅</p>
-        </div>
+        <h1 className="text-2xl font-bold text-center">激活码兑换</h1>
+        <p className="text-sm text-muted-foreground text-center">
+          输入邮箱和激活码以获取订阅
+        </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label htmlFor="code" className="block text-sm font-medium mb-2">
-              激活码
-            </label>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">邮箱</label>
             <Input
-              id="code"
+              type="email"
+              placeholder="请输入邮箱"
+              value={email}
+              onChange={(e) => setEmail(e.target.value.trim())}
+              disabled={loading}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">激活码</label>
+            <Input
               type="text"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
               placeholder="请输入激活码"
+              value={code}
+              onChange={(e) => setCode(e.target.value.trim())}
               disabled={loading}
               required
             />
           </div>
 
+          {/* Turnstile Widget */}
+          <div className="flex justify-center">
+            <Turnstile
+              siteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || ""}
+              onVerify={(token: string) => {
+                setTurnstileToken(token);
+                setChallengeRequired(false);
+              }}
+              onError={() => {
+                setTurnstileToken(null);
+                setError("人机验证失败，请重试");
+              }}
+              onExpire={() => {
+                setTurnstileToken(null);
+              }}
+              theme="light"
+              size="normal"
+            />
+          </div>
+
           <Button
             type="submit"
+            disabled={loading || !email || !code}
             className="w-full"
-            disabled={loading || !code.trim()}
           >
-            {loading ? '处理中...' : '兑换'}
+            {loading ? "兑换中..." : "兑换"}
           </Button>
         </form>
 
         {result && (
-          <div
-            className={`p-4 rounded-lg ${
-              result.success
-                ? 'bg-green-50 border border-green-200'
-                : 'bg-red-50 border border-red-200'
-            }`}
-          >
-            {result.success ? (
-              <div className="space-y-3">
-                <p className="text-green-700 font-medium">兑换成功！</p>
-                {result.plan_name && (
-                  <p className="text-sm text-gray-600">
-                    订阅计划：{result.plan_name}
-                  </p>
-                )}
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">订阅 Token：</p>
-                  <p className="text-sm bg-white p-2 rounded border break-all">
-                    {result.sub_token}
-                  </p>
-                </div>
-                {result.expire_at && (
-                  <p className="text-sm text-gray-600">
-                    有效期至：{new Date(result.expire_at).toLocaleDateString('zh-CN')}
-                  </p>
-                )}
-              </div>
-            ) : (
-              <p className="text-red-700">{result.error}</p>
+          <div className="p-4 rounded-lg bg-green-50 dark:bg-green-950 space-y-2">
+            <p className="text-green-700 dark:text-green-300 font-medium">
+              兑换成功！
+            </p>
+            <p className="text-sm">
+              <span className="font-medium">套餐：</span>
+              {result.data.planName}
+            </p>
+            <div className="space-y-2">
+              <span className="text-sm font-medium">订阅链接 / Token：</span>
+              <Input
+                readOnly
+                value={result.data.subToken}
+                className="font-mono text-xs"
+              />
+              {(result.data.subToken.startsWith("http://") ||
+                result.data.subToken.startsWith("https://")) && (
+                <a
+                  href={result.data.subToken}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-blue-600 underline-offset-2 hover:underline"
+                >
+                  打开订阅链接
+                </a>
+              )}
+            </div>
+            <p className="text-sm">
+              <span className="font-medium">到期时间：</span>
+              {new Date(result.data.expireAt).toLocaleString("zh-CN")}
+            </p>
+            {result.data.isNewUser && (
+              <p className="text-sm text-green-600 dark:text-green-400">
+                新用户注册成功！
+              </p>
+            )}
+          </div>
+        )}
+
+        {error && (
+          <div className="p-4 rounded-lg bg-red-50 dark:bg-red-950 space-y-2">
+            <p className="text-red-700 dark:text-red-300 text-sm">{error}</p>
+            {challengeRequired && (
+              <p className="text-xs text-red-600 dark:text-red-400">
+                请完成上方人机验证后重试
+              </p>
             )}
           </div>
         )}
