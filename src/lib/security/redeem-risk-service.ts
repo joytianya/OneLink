@@ -7,13 +7,17 @@
 
 import { db } from '../db';
 import { redeemRiskAttempts } from '../db/schema/redeem-risk-attempts';
-import { and, count, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray } from 'drizzle-orm';
 import { createHmac } from 'crypto';
 import { verifyTurnstile, TurnstileVerifyResult } from './turnstile';
 
 // HMAC 密钥配置
 export function getRateLimitHmacKey(): string {
-  return process.env.RATE_LIMIT_HMAC_KEY || 'default-hmac-key-change-in-production';
+  const key = process.env.RATE_LIMIT_HMAC_KEY;
+  if (!key) {
+    throw new Error('RATE_LIMIT_HMAC_KEY environment variable is required for rate limiting');
+  }
+  return key;
 }
 
 // 阈值策略配置
@@ -71,7 +75,7 @@ async function getFailCount(
   const hashColumn = bucketType === 'ip' ? redeemRiskAttempts.ipHash : redeemRiskAttempts.emailHash;
 
   // 只统计攻击面相关的失败：business_failed, invalid_input, challenge_failed
-  const attackOutcomes = ['business_failed', 'invalid_input', 'challenge_failed'];
+  const attackOutcomes = ['business_failed', 'invalid_input', 'challenge_failed'] as const;
 
   const result = await db
     .select({ count: count() })
@@ -79,7 +83,7 @@ async function getFailCount(
     .where(
       and(
         eq(hashColumn, bucketHash),
-        sql`${redeemRiskAttempts.outcome} IN (${attackOutcomes.map(o => `'${o}'`).join(',')})`,
+        inArray(redeemRiskAttempts.outcome, attackOutcomes),
         gte(redeemRiskAttempts.createdAt, windowStart)
       )
     );
@@ -89,20 +93,27 @@ async function getFailCount(
 
 /**
  * 检查是否处于硬限流状态
+ * @param bucketType - 维度类型 'ip' 或 'email'
  * @param bucketHash - 维度哈希值
  * @param blockMinutes - 限流时长（分钟）
  * @returns 是否处于限流中
  */
-async function isBlocked(bucketHash: string, blockMinutes: number): Promise<boolean> {
+async function isBlocked(
+  bucketType: 'ip' | 'email',
+  bucketHash: string,
+  blockMinutes: number
+): Promise<boolean> {
   // 检查最近是否有 blocked 状态记录
   const blockStart = new Date(Date.now() - blockMinutes * 60 * 1000);
+
+  const hashColumn = bucketType === 'ip' ? redeemRiskAttempts.ipHash : redeemRiskAttempts.emailHash;
 
   const result = await db
     .select()
     .from(redeemRiskAttempts)
     .where(
       and(
-        eq(redeemRiskAttempts.ipHash, bucketHash),
+        eq(hashColumn, bucketHash),
         eq(redeemRiskAttempts.outcome, 'blocked'),
         gte(redeemRiskAttempts.createdAt, blockStart)
       )
@@ -127,7 +138,7 @@ export async function evaluateRisk(ip: string, email: string): Promise<RiskEvalu
   const ipHardCount = await getFailCount('ip', ipHash, RATE_LIMIT_POLICY.ip.hardWindowMinutes);
   if (ipHardCount >= RATE_LIMIT_POLICY.ip.hardThreshold) {
     // 检查是否已记录限流
-    const blocked = await isBlocked(ipHash, RATE_LIMIT_POLICY.ip.blockMinutes);
+    const blocked = await isBlocked('ip', ipHash, RATE_LIMIT_POLICY.ip.blockMinutes);
     if (blocked) {
       return { decision: 'BLOCKED', reason: 'IP rate limited' };
     }
@@ -136,7 +147,7 @@ export async function evaluateRisk(ip: string, email: string): Promise<RiskEvalu
   // 2. 检查邮箱硬限流
   const emailHardCount = await getFailCount('email', emailHash, RATE_LIMIT_POLICY.email.hardWindowMinutes);
   if (emailHardCount >= RATE_LIMIT_POLICY.email.hardThreshold) {
-    const blocked = await isBlocked(emailHash, RATE_LIMIT_POLICY.email.blockMinutes);
+    const blocked = await isBlocked('email', emailHash, RATE_LIMIT_POLICY.email.blockMinutes);
     if (blocked) {
       return { decision: 'BLOCKED', reason: 'Email rate limited' };
     }
@@ -201,10 +212,33 @@ export async function recordAttempt(
 }
 
 /**
- * 成功兑换后清理风控状态（重置计数窗口）
- * 注意：不删除历史记录，只标记为 success
+ * 成功兑换后清理风控状态
+ * - 清理当前邮箱 bucket 的失败记录
+ * - 为 IP bucket 记录成功事件（作为新窗口起点）
+ * - 保留审计日志（success 记录）
  */
 export async function clearRiskState(ip: string, email: string): Promise<void> {
-  // 记录成功，作为未来判定的参考
-  await recordAttempt(ip, email, 'success', 'Redemption successful', undefined, false, false);
+  const ipHash = hmacHash(ip);
+  const emailHash = hmacHash(normalizeEmail(email));
+
+  // 1. 删除邮箱维度的失败记录（真正清理）
+  const attackOutcomes = ['business_failed', 'invalid_input', 'challenge_failed'] as const;
+  await db
+    .delete(redeemRiskAttempts)
+    .where(
+      and(
+        eq(redeemRiskAttempts.emailHash, emailHash),
+        inArray(redeemRiskAttempts.outcome, attackOutcomes)
+      )
+    );
+
+  // 2. 记录成功事件（作为审计日志和 IP 维度的新窗口起点）
+  await db.insert(redeemRiskAttempts).values({
+    ipHash,
+    emailHash,
+    outcome: 'success',
+    reason: 'Redemption successful',
+    turnstileRequired: false,
+    turnstilePassed: false,
+  });
 }
