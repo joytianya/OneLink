@@ -5,37 +5,50 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 interface RedeemSuccess {
-  sub_token: string;
-  expire_at: string;
+  success: true;
+  data: {
+    planName: string;
+    expireAt: string;
+    isNewUser: boolean;
+  };
 }
 
 interface RedeemError {
   error: string;
+  message: string;
 }
 
 export default function RedeemPage() {
+  const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<RedeemSuccess | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [challengeRequired, setChallengeRequired] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
     setResult(null);
+    setChallengeRequired(false);
 
     try {
       const res = await fetch("/api/redeem", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ email, code }),
       });
 
       const data: RedeemSuccess | RedeemError = await res.json();
 
       if (!res.ok) {
-        setError((data as RedeemError).error || "兑换失败");
+        const errorData = data as RedeemError;
+        setError(errorData.message || "兑换失败");
+        // Check if challenge required
+        if (errorData.error === "CHALLENGE_REQUIRED") {
+          setChallengeRequired(true);
+        }
       } else {
         setResult(data as RedeemSuccess);
       }
@@ -51,19 +64,33 @@ export default function RedeemPage() {
       <div className="w-full max-w-md space-y-6">
         <h1 className="text-2xl font-bold text-center">激活码兑换</h1>
         <p className="text-sm text-muted-foreground text-center">
-          输入您的激活码以获取订阅链接
+          输入邮箱和激活码以获取订阅
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Input
-            type="text"
-            placeholder="请输入激活码"
-            value={code}
-            onChange={(e) => setCode(e.target.value.trim())}
-            disabled={loading}
-            required
-          />
-          <Button type="submit" disabled={loading || !code} className="w-full">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">邮箱</label>
+            <Input
+              type="email"
+              placeholder="请输入邮箱"
+              value={email}
+              onChange={(e) => setEmail(e.target.value.trim())}
+              disabled={loading}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">激活码</label>
+            <Input
+              type="text"
+              placeholder="请输入激活码"
+              value={code}
+              onChange={(e) => setCode(e.target.value.trim())}
+              disabled={loading}
+              required
+            />
+          </div>
+          <Button type="submit" disabled={loading || !email || !code} className="w-full">
             {loading ? "兑换中..." : "兑换"}
           </Button>
         </form>
@@ -74,22 +101,29 @@ export default function RedeemPage() {
               兑换成功！
             </p>
             <p className="text-sm">
-              <span className="font-medium">订阅链接：</span>
-              <br />
-              <code className="text-xs bg-green-100 dark:bg-green-900 p-1 rounded block mt-1">
-                {result.sub_token}
-              </code>
+              <span className="font-medium">套餐：</span>
+              {result.data.planName}
             </p>
             <p className="text-sm">
               <span className="font-medium">到期时间：</span>
-              {new Date(result.expire_at).toLocaleString("zh-CN")}
+              {new Date(result.data.expireAt).toLocaleString("zh-CN")}
             </p>
+            {result.data.isNewUser && (
+              <p className="text-sm text-green-600 dark:text-green-400">
+                新用户注册成功！
+              </p>
+            )}
           </div>
         )}
 
         {error && (
-          <div className="p-4 rounded-lg bg-red-50 dark:bg-red-950">
+          <div className="p-4 rounded-lg bg-red-50 dark:bg-red-950 space-y-2">
             <p className="text-red-700 dark:text-red-300 text-sm">{error}</p>
+            {challengeRequired && (
+              <p className="text-xs text-red-600 dark:text-red-400">
+                请刷新页面后重试，或稍后再试
+              </p>
+            )}
           </div>
         )}
       </div>
