@@ -28,17 +28,6 @@ export interface RateLimitResult {
 const ATTACK_SURFACE_ERRORS: RedeemError[] = ['INVALID_INPUT', 'INVALID_CODE', 'CODE_ALREADY_USED'];
 
 /**
- * 非攻击面错误 - 不计入风控失败
- */
-const NON_ATTACK_ERRORS: RedeemError[] = [
-  'NO_UPSTREAM_CAPACITY',
-  'USER_SUSPENDED',
-  'SUBSCRIPTION_SUSPENDED',
-  'SYSTEM_ERROR',
-  'CODE_DISABLED',
-];
-
-/**
  * 执行带风控的兑换流程
  * @param ip - 客户端 IP
  * @param email - 用户邮箱

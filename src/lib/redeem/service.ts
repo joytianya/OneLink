@@ -6,7 +6,6 @@
 import { db } from '../db';
 import { activationCodes, users, subscriptions, plans, redemptionLogs } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
-import { randomUUID } from 'crypto';
 
 // 兑换请求
 export interface RedeemRequest {
@@ -126,7 +125,7 @@ export async function executeRedeem(request: RedeemRequest): Promise<RedeemResul
       }
 
       // 2.6 查询或更新订阅
-      let subscription = await tx
+      const subscription = await tx
         .select()
         .from(subscriptions)
         .where(eq(subscriptions.userId, userInfo.id))

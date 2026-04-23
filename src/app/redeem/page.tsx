@@ -109,10 +109,8 @@ export default function RedeemPage() {
               onExpire={() => {
                 setTurnstileToken(null);
               }}
-              options={{
-                theme: "light",
-                size: "normal",
-              }}
+              theme="light"
+              size="normal"
             />
           </div>
 
