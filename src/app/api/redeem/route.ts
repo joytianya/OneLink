@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { activationCodes, plans, users, subscriptions } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
+import { activationCodes, plans, users, subscriptions, subscriptionEntitlements, redemptionLogs } from '@/lib/db/schema';
+import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 
 export async function POST(request: NextRequest) {
@@ -16,51 +16,57 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 获取客户端信息用于审计
+    const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+    const userAgent = request.headers.get('user-agent') || 'unknown';
+
     // 使用事务确保操作原子性
     const result = await db.transaction(async (tx) => {
-      // 1. 验证激活码存在且状态为 unused（在事务内锁定）
-      const activationCode = await tx
-        .select()
-        .from(activationCodes)
-        .where(eq(activationCodes.code, code))
-        .limit(1);
+      // 1. 使用 FOR UPDATE 锁定激活码行，防止并发重复兑换
+      const activationCode = await tx.execute(
+        sql`SELECT * FROM activation_codes WHERE code = ${code} FOR UPDATE`
+      );
 
       if (activationCode.length === 0) {
         throw new Error('ACTIVATION_CODE_NOT_FOUND');
       }
 
-      const ac = activationCode[0];
+      const ac = activationCode[0] as typeof activationCodes.$inferSelect;
 
       if (ac.status !== 'unused') {
         throw new Error('ACTIVATION_CODE_USED_OR_DISABLED');
       }
 
-      // 2. 获取关联的 plan 信息
-      const plan = await tx
-        .select()
-        .from(plans)
-        .where(eq(plans.id, ac.planId))
-        .limit(1);
+      // 2. 获取关联的 plan 信息并检查 active 状态
+      const plan = await tx.execute(
+        sql`SELECT * FROM plans WHERE id = ${ac.planId} FOR UPDATE`
+      );
 
       if (plan.length === 0) {
         throw new Error('PLAN_NOT_FOUND');
       }
 
-      const p = plan[0];
+      const p = plan[0] as typeof plans.$inferSelect;
 
-      // 3. 创建临时用户（使用生成的临时邮箱）
+      if (!p.active) {
+        throw new Error('PLAN_NOT_ACTIVE');
+      }
+
+      // 3. 创建临时用户
       const tempEmail = `temp-${randomUUID()}@redeem.local`;
       const newUser = await tx.insert(users).values({
         email: tempEmail,
         status: 'active',
       }).returning();
 
-      // 4. 生成 sub_token 并计算 expire_at
-      const subToken = randomUUID();
-      const expireAt = new Date();
-      expireAt.setDate(expireAt.getDate() + p.periodDays);
+      // 4. 使用 UTC 时间计算 expire_at
+      const now = new Date();
+      const expireAt = new Date(now.getTime() + p.periodDays * 24 * 60 * 60 * 1000);
 
-      // 5. 创建订阅记录
+      // 5. 生成 sub_token
+      const subToken = randomUUID();
+
+      // 6. 创建订阅记录
       await tx.insert(subscriptions).values({
         userId: newUser[0].id,
         subToken,
@@ -69,19 +75,33 @@ export async function POST(request: NextRequest) {
         status: 'active',
       });
 
-      // 6. 更新激活码状态为 used
-      await tx.update(activationCodes)
-        .set({
-          status: 'used',
-          usedByUserId: newUser[0].id,
-          usedAt: new Date(),
-        })
-        .where(eq(activationCodes.id, ac.id));
+      // 7. 写入权益表（codeId UNIQUE 约束提供数据库层面的防重复）
+      await tx.insert(subscriptionEntitlements).values({
+        userId: newUser[0].id,
+        codeId: ac.id,
+        planId: ac.planId,
+        startAt: now,
+        endAt: expireAt,
+        status: 'active',
+      });
+
+      // 8. 写入审计日志
+      await tx.insert(redemptionLogs).values({
+        userId: newUser[0].id,
+        codeId: ac.id,
+        planId: ac.planId,
+        ip: clientIp,
+        userAgent,
+      });
+
+      // 9. 更新激活码状态为 used
+      await tx.execute(
+        sql`UPDATE activation_codes SET status = 'used', used_by_user_id = ${newUser[0].id}, used_at = ${now} WHERE id = ${ac.id}`
+      );
 
       return { subToken, expireAt };
     });
 
-    // 7. 返回订阅信息
     return NextResponse.json({
       success: true,
       sub_token: result.subToken,
@@ -89,23 +109,27 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof Error) {
-      if (error.message === 'ACTIVATION_CODE_NOT_FOUND') {
-        return NextResponse.json(
-          { success: false, error: '激活码不存在' },
-          { status: 400 }
-        );
-      }
-      if (error.message === 'ACTIVATION_CODE_USED_OR_DISABLED') {
-        return NextResponse.json(
-          { success: false, error: '激活码已被使用或已禁用' },
-          { status: 400 }
-        );
-      }
-      if (error.message === 'PLAN_NOT_FOUND') {
-        return NextResponse.json(
-          { success: false, error: '激活码关联的套餐不存在' },
-          { status: 500 }
-        );
+      switch (error.message) {
+        case 'ACTIVATION_CODE_NOT_FOUND':
+          return NextResponse.json(
+            { success: false, error: '激活码不存在' },
+            { status: 400 }
+          );
+        case 'ACTIVATION_CODE_USED_OR_DISABLED':
+          return NextResponse.json(
+            { success: false, error: '激活码已被使用或已禁用' },
+            { status: 400 }
+          );
+        case 'PLAN_NOT_FOUND':
+          return NextResponse.json(
+            { success: false, error: '激活码关联的套餐不存在' },
+            { status: 500 }
+          );
+        case 'PLAN_NOT_ACTIVE':
+          return NextResponse.json(
+            { success: false, error: '激活码关联的套餐已停售' },
+            { status: 400 }
+          );
       }
     }
     console.error('Redemption error:', error);
