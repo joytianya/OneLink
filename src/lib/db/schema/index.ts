@@ -8,4 +8,3 @@ export * from './subscriptions';
 export * from './redemption-logs';
 export * from './admin-users';
 export * from './admin-audit-logs';
-export * from './redeem-risk-attempts';
