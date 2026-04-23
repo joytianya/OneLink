@@ -116,6 +116,7 @@ export async function POST(request: NextRequest) {
         success: true,
         data: {
           planName: result.redeemResult.data.planName,
+          subToken: result.redeemResult.data.subToken,
           expireAt: result.redeemResult.data.expireAt.toISOString(),
           isNewUser: result.redeemResult.data.isNewUser,
         },

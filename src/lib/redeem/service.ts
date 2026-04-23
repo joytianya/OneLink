@@ -22,6 +22,7 @@ export interface RedeemResult {
     subscriptionId: string;
     planId: string;
     planName: string;
+    subToken: string;
     expireAt: Date;
     isNewUser: boolean;
   };
@@ -210,6 +211,7 @@ export async function executeRedeem(request: RedeemRequest): Promise<RedeemResul
         subscriptionId: subscriptionInfo.id,
         planId: planInfo.id,
         planName: planInfo.name,
+        subToken: subscriptionInfo.subToken,
         expireAt: subscriptionInfo.expireAt!,
         isNewUser,
       };

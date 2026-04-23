@@ -9,6 +9,7 @@ interface RedeemSuccess {
   success: true;
   data: {
     planName: string;
+    subToken: string;
     expireAt: string;
     isNewUser: boolean;
   };
@@ -132,6 +133,25 @@ export default function RedeemPage() {
               <span className="font-medium">套餐：</span>
               {result.data.planName}
             </p>
+            <div className="space-y-2">
+              <span className="text-sm font-medium">订阅链接 / Token：</span>
+              <Input
+                readOnly
+                value={result.data.subToken}
+                className="font-mono text-xs"
+              />
+              {(result.data.subToken.startsWith("http://") ||
+                result.data.subToken.startsWith("https://")) && (
+                <a
+                  href={result.data.subToken}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-blue-600 underline-offset-2 hover:underline"
+                >
+                  打开订阅链接
+                </a>
+              )}
+            </div>
             <p className="text-sm">
               <span className="font-medium">到期时间：</span>
               {new Date(result.data.expireAt).toLocaleString("zh-CN")}

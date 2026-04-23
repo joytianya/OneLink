@@ -40,6 +40,7 @@ export const RATE_LIMIT_POLICY = {
 export interface RiskEvaluation {
   decision: 'ALLOW' | 'CHALLENGE' | 'BLOCKED';
   reason?: string;
+  shouldRecordBlock?: boolean;
 }
 
 // HMAC-SHA256 哈希
@@ -126,26 +127,30 @@ export async function evaluateRisk(ip: string, email: string): Promise<RiskEvalu
   const ipHash = hmacHash(ip);
   const emailHash = hmacHash(normalizeEmail(email));
 
-  // 1. 检查 IP 硬限流
+  // 1. 检查现有封禁状态
+  const ipBlocked = await isBlocked('ip', ipHash, RATE_LIMIT_POLICY.ip.blockMinutes);
+  if (ipBlocked) {
+    return { decision: 'BLOCKED', reason: 'IP block is active', shouldRecordBlock: false };
+  }
+
+  const emailBlocked = await isBlocked('email', emailHash, RATE_LIMIT_POLICY.email.blockMinutes);
+  if (emailBlocked) {
+    return { decision: 'BLOCKED', reason: 'Email block is active', shouldRecordBlock: false };
+  }
+
+  // 2. 硬阈值命中时立即阻断，由调用方落一条 blocked 记录
   const ipHardCount = await getFailCount('ip', ipHash, RATE_LIMIT_POLICY.ip.hardWindowMinutes);
   if (ipHardCount >= RATE_LIMIT_POLICY.ip.hardThreshold) {
-    // 检查是否已记录限流
-    const blocked = await isBlocked('ip', ipHash, RATE_LIMIT_POLICY.ip.blockMinutes);
-    if (blocked) {
-      return { decision: 'BLOCKED', reason: 'IP rate limited' };
-    }
+    return { decision: 'BLOCKED', reason: 'IP hard threshold exceeded', shouldRecordBlock: true };
   }
 
-  // 2. 检查邮箱硬限流
+  // 3. 硬阈值命中时立即阻断，由调用方落一条 blocked 记录
   const emailHardCount = await getFailCount('email', emailHash, RATE_LIMIT_POLICY.email.hardWindowMinutes);
   if (emailHardCount >= RATE_LIMIT_POLICY.email.hardThreshold) {
-    const blocked = await isBlocked('email', emailHash, RATE_LIMIT_POLICY.email.blockMinutes);
-    if (blocked) {
-      return { decision: 'BLOCKED', reason: 'Email rate limited' };
-    }
+    return { decision: 'BLOCKED', reason: 'Email hard threshold exceeded', shouldRecordBlock: true };
   }
 
-  // 3. 检查是否需要 Turnstile 挑战
+  // 4. 检查是否需要 Turnstile 挑战
   const ipSoftCount = await getFailCount('ip', ipHash, RATE_LIMIT_POLICY.ip.softWindowMinutes);
   const emailSoftCount = await getFailCount('email', emailHash, RATE_LIMIT_POLICY.email.softWindowMinutes);
 

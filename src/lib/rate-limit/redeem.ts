@@ -47,7 +47,9 @@ export async function executeRedeemWithRateLimit(
 
   // 2. 硬限流直接拦截
   if (riskEval.decision === 'BLOCKED') {
-    await recordAttempt(ip, email, 'blocked', riskEval.reason, userAgent, false, false);
+    if (riskEval.shouldRecordBlock) {
+      await recordAttempt(ip, email, 'blocked', riskEval.reason, userAgent, false, false);
+    }
     return {
       allowed: false,
       error: 'RATE_LIMITED',
